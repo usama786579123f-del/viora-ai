@@ -1,15 +1,14 @@
-{
+﻿{
   "name": "viora-backend",
   "version": "1.0.0",
   "description": "",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js","test": "echo \\"Error: no test specified\\" && exit 1"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "axios": "^1.18.1",
     "bcryptjs": "^3.0.3",
