@@ -13,12 +13,10 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => console.log("❌ MongoDB Error:", err));
 
-// User Model
 const UserSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -29,12 +27,16 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model("User", UserSchema);
 
 const app = express();
-app.use(cors());
+
+app.use(cors({
+  origin: ["https://viora-ai-weld.vercel.app", "http://localhost:5173"],
+  credentials: true
+}));
+
 app.use(express.json({ limit: "20mb" }));
 
 const JWT_SECRET = process.env.JWT_SECRET || "viora_secret_key";
 
-// ✅ REGISTER
 app.post("/register", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -49,7 +51,6 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ✅ LOGIN
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -64,7 +65,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// ✅ GET USER
 app.get("/me", async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -77,7 +77,6 @@ app.get("/me", async (req, res) => {
   }
 });
 
-// Video generation
 const FAL_KEY = process.env.FAL_KEY;
 function getEndpoint(resolution) {
   const pro = ["1080p", "2K", "4K"].includes(resolution);
