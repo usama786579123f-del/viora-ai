@@ -2,6 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const cloudinary = require("cloudinary").v2;
 
 cloudinary.config({
@@ -10,12 +13,72 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// MongoDB Connect
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.log("❌ MongoDB Error:", err));
+
+// User Model
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  credits: { type: Number, default: 3 },
+  plan: { type: String, default: "FREE" },
+  createdAt: { type: Date, default: Date.now }
+});
+const User = mongoose.model("User", UserSchema);
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
-const FAL_KEY = process.env.FAL_KEY;
+const JWT_SECRET = process.env.JWT_SECRET || "viora_secret_key";
 
+// ✅ REGISTER
+app.post("/register", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const exists = await User.findOne({ email });
+    if (exists) return res.status(400).json({ error: "Email already exists" });
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await User.create({ email, password: hashed });
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: { email: user.email, credits: user.credits, plan: user.plan } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ LOGIN
+app.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: "User not found" });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ error: "Wrong password" });
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: { email: user.email, credits: user.credits, plan: user.plan } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ GET USER
+app.get("/me", async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) return res.status(401).json({ error: "No token" });
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.id).select("-password");
+    res.json(user);
+  } catch (err) {
+    res.status(401).json({ error: "Invalid token" });
+  }
+});
+
+// Video generation
+const FAL_KEY = process.env.FAL_KEY;
 function getEndpoint(resolution) {
   const pro = ["1080p", "2K", "4K"].includes(resolution);
   return pro
@@ -26,21 +89,13 @@ function getEndpoint(resolution) {
 app.post("/generate-video", async (req, res) => {
   try {
     const { image, prompt, negativePrompt, duration, resolution } = req.body;
-
-    console.log("📥 New request:", { prompt, resolution, duration });
-
-    console.log("⬆️ Uploading image to Cloudinary...");
     const uploadRes = await cloudinary.uploader.upload(
       `data:image/jpeg;base64,${image}`,
       { folder: "viora-inputs" }
     );
     const imageUrl = uploadRes.secure_url;
-    console.log("✅ Image uploaded:", imageUrl);
-
     const endpoint = getEndpoint(resolution);
     const safeDuration = duration && duration.toString().startsWith("10") ? "10" : "5";
-
-    console.log("🚀 Submitting to fal.ai:", endpoint);
     const submitRes = await axios.post(
       `https://queue.fal.run/${endpoint}`,
       {
@@ -51,59 +106,32 @@ app.post("/generate-video", async (req, res) => {
       },
       { headers: { Authorization: `Key ${FAL_KEY}` } }
     );
-
     const { status_url, response_url } = submitRes.data;
-    console.log("📋 Task queued, request_id:", submitRes.data.request_id);
-
     let completed = false;
     let attempts = 0;
-
     while (!completed && attempts < 90) {
       await new Promise((r) => setTimeout(r, 5000));
-
       const statusRes = await axios.get(status_url, {
         headers: { Authorization: `Key ${FAL_KEY}` },
       });
-
-      console.log(`⏳ Attempt ${attempts + 1}: ${statusRes.data.status}`);
-
-      if (statusRes.data.status === "COMPLETED") {
-        completed = true;
-      } else if (statusRes.data.status === "ERROR") {
-        throw new Error("Video generation failed on fal.ai");
-      }
-
+      if (statusRes.data.status === "COMPLETED") completed = true;
+      else if (statusRes.data.status === "ERROR") throw new Error("Video generation failed");
       attempts++;
     }
-
-    if (!completed) {
-      throw new Error("Timeout — video generate hone mein zyada time lag gaya");
-    }
-
+    if (!completed) throw new Error("Timeout");
     const resultRes = await axios.get(response_url, {
       headers: { Authorization: `Key ${FAL_KEY}` },
     });
-
     const falVideoUrl = resultRes.data.video.url;
-    console.log("🎬 Video ready from fal.ai:", falVideoUrl);
-
-    console.log("⬆️ Saving video permanently to Cloudinary...");
     const videoUploadRes = await cloudinary.uploader.upload(falVideoUrl, {
       resource_type: "video",
       folder: "viora-videos",
     });
-
-    console.log("✅ Done! Final URL:", videoUploadRes.secure_url);
     res.json({ videoUrl: videoUploadRes.secure_url });
-
   } catch (err) {
-    console.error("❌ Generation error:", err.response?.data || err.message);
-    res.status(500).json({
-      error: err.response?.data?.detail || err.message,
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(process.env.PORT || 5000, () => {
-  console.log(`🚀 Server running on port ${process.env.PORT || 5000}`);
-});
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
